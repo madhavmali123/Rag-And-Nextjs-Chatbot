@@ -16,9 +16,13 @@ export const config = {
 };
 
 // Helper to wrap multer
-const runMiddleware = (req: NextApiRequest, res: NextApiResponse, fn: Function) =>
+const runMiddleware = (
+  req: NextApiRequest,
+  res: NextApiResponse,
+  fn: (req: NextApiRequest, res: NextApiResponse, callback: (result: unknown) => void) => void
+): Promise<unknown> =>
   new Promise((resolve, reject) => {
-    fn(req, res, (result: any) => {
+    fn(req, res, (result) => {
       if (result instanceof Error) return reject(result);
       return resolve(result);
     });
@@ -41,33 +45,30 @@ function chunkText(text: string, maxLength = 1000): string[] {
   return chunks;
 }
 
-const handler = async (req: NextApiRequest, res: NextApiResponse) => {
+const handler = async (req: NextApiRequest, res: NextApiResponse): Promise<void> => {
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Only POST allowed' });
+    res.status(405).json({ message: 'Only POST allowed' });
+    return;
   }
 
   try {
-    // Run multer middleware
     await runMiddleware(req, res, upload.single('file'));
 
     const file = (req as any).file as Express.Multer.File;
     const filePath = path.join(process.cwd(), 'uploads', file.filename);
     const fileBuffer = fs.readFileSync(filePath);
 
-    // Extract text from PDF
     const pdfData = await pdfParse(fileBuffer);
     const chunks = chunkText(pdfData.text);
 
-    // Embed and upsert into Pinecone
     await upsertChunks(chunks);
 
-    // Clean up uploaded file
     fs.unlinkSync(filePath);
 
     res.status(200).json({ message: 'File uploaded and embedded successfully', chunksCount: chunks.length });
-  } catch (err: any) {
+  } catch (err) {
     console.error('Upload error:', err);
-    res.status(500).json({ error: err.message || 'Something went wrong' });
+    res.status(500).json({ error: (err as Error).message || 'Something went wrong' });
   }
 };
 

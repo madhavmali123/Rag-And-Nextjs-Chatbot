@@ -9,10 +9,18 @@ const embedModel = genAI.getGenerativeModel({ model: "models/text-embedding-004"
 const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
 const index = pinecone.index(process.env.PINECONE_INDEX!);
 
+interface Vector {
+  id: string;
+  values: number[];
+  metadata: {
+    text: string;
+  };
+}
+
 /**
  * Upserts chunks into Pinecone vector DB after embedding.
  */
-export async function upsertChunks(chunks: string[]) {
+export async function upsertChunks(chunks: string[]): Promise<void> {
   for (const chunk of chunks) {
     const embeddingResponse = await embedModel.embedContent({
       content: {
@@ -21,7 +29,7 @@ export async function upsertChunks(chunks: string[]) {
       }
     });
 
-    const vector = {
+    const vector: Vector = {
       id: crypto.randomUUID(),
       values: embeddingResponse.embedding.values,
       metadata: { text: chunk }
@@ -29,6 +37,12 @@ export async function upsertChunks(chunks: string[]) {
 
     await index.upsert([vector]);
   }
+}
+
+interface SearchMatch {
+  metadata: {
+    text: string;
+  };
 }
 
 /**
@@ -50,5 +64,5 @@ export async function getRelevantChunks(query: string): Promise<string[]> {
     includeMetadata: true
   });
 
-  return search.matches.map((match: any) => match.metadata.text);
+  return search.matches.map((match: SearchMatch) => match.metadata.text);
 }
