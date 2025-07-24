@@ -1,6 +1,12 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getRelevantChunks } from "@/lib/vectorStore";
 
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY is not defined in environment variables.");
+}
+
+
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export default async function handler(req, res) {
