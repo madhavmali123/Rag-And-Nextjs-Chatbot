@@ -33,7 +33,7 @@ export default function Home() {
       body: formData,
     });
 
-    const data = await res.json();
+    const _data = await res.json();
     
     
 

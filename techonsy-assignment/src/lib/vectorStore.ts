@@ -64,5 +64,8 @@ export async function getRelevantChunks(query: string): Promise<string[]> {
     includeMetadata: true
   });
 
-  return search.matches.map((match: SearchMatch) => match.metadata.text);
+  return search.matches
+  .map((match) => match.metadata?.text)
+  .filter((text): text is string => typeof text === 'string');
+
 }

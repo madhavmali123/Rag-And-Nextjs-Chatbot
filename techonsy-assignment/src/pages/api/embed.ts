@@ -4,29 +4,68 @@ import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
 import { upsertChunks } from '@/lib/vectorStore';
+import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 
-// Setup multer
-const upload = multer({ dest: 'uploads/' });
+interface NextApiRequestWithFile extends NextApiRequest {
+  file?: Express.Multer.File;
+}
 
-// Disable default body parsing
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const uploadDir = path.join(process.cwd(), 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, `${Date.now()}-${file.originalname}`);
+    }
+  })
+});
+
+const createExpressRequest = (req: NextApiRequest): ExpressRequest => {
+  return {
+    ...req,
+    get: (name: string) => {
+      const header = req.headers[name];
+      return Array.isArray(header) ? header[0] : header;
+    },
+    header: (name: string) => {
+      const header = req.headers[name];
+      return Array.isArray(header) ? header[0] : header;
+    },
+    accepts: () => [],
+    acceptsCharsets: () => [],
+    // Add other minimal required Express methods
+  } as unknown as ExpressRequest;
+};
+
+const runMiddleware = (req: NextApiRequestWithFile, res: NextApiResponse) => {
+  return new Promise<void>((resolve, reject) => {
+    const expressReq = createExpressRequest(req);
+    const expressRes = {
+      ...res,
+      status: (code: number) => ({ json: () => expressRes }),
+      json: () => expressRes
+    } as unknown as ExpressResponse;
+
+    upload.single('file')(expressReq, expressRes, (err: unknown) => {
+      if (err) return reject(err);
+      if (expressReq.file) {
+        req.file = expressReq.file;
+      }
+      resolve();
+    });
+  });
+};
+
 export const config = {
   api: {
     bodyParser: false,
   },
 };
-
-// Helper to wrap multer
-const runMiddleware = (
-  req: NextApiRequest,
-  res: NextApiResponse,
-  fn: (req: NextApiRequest, res: NextApiResponse, callback: (result: unknown) => void) => void
-): Promise<unknown> =>
-  new Promise((resolve, reject) => {
-    fn(req, res, (result) => {
-      if (result instanceof Error) return reject(result);
-      return resolve(result);
-    });
-  });
 
 function chunkText(text: string, maxLength = 1000): string[] {
   const chunks: string[] = [];
@@ -45,17 +84,22 @@ function chunkText(text: string, maxLength = 1000): string[] {
   return chunks;
 }
 
-const handler = async (req: NextApiRequest, res: NextApiResponse): Promise<void> => {
+export default async function handler(
+  req: NextApiRequestWithFile,
+  res: NextApiResponse
+) {
   if (req.method !== 'POST') {
-    res.status(405).json({ message: 'Only POST allowed' });
-    return;
+    return res.status(405).json({ message: 'Method not allowed' });
   }
 
   try {
-    await runMiddleware(req, res, upload.single('file'));
+    await runMiddleware(req, res);
 
-    const file = (req as any).file as Express.Multer.File;
-    const filePath = path.join(process.cwd(), 'uploads', file.filename);
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const filePath = path.join(process.cwd(), 'uploads', req.file.filename);
     const fileBuffer = fs.readFileSync(filePath);
 
     const pdfData = await pdfParse(fileBuffer);
@@ -63,13 +107,19 @@ const handler = async (req: NextApiRequest, res: NextApiResponse): Promise<void>
 
     await upsertChunks(chunks);
 
-    fs.unlinkSync(filePath);
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      console.error('File cleanup error:', err);
+    }
 
-    res.status(200).json({ message: 'File uploaded and embedded successfully', chunksCount: chunks.length });
+    return res.status(200).json({ 
+      message: 'File uploaded and embedded successfully', 
+      chunksCount: chunks.length 
+    });
   } catch (err) {
     console.error('Upload error:', err);
-    res.status(500).json({ error: (err as Error).message || 'Something went wrong' });
+    const errorMessage = err instanceof Error ? err.message : 'Something went wrong';
+    return res.status(500).json({ error: errorMessage });
   }
-};
-
-export default handler;
+}
