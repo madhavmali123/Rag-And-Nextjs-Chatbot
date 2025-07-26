@@ -1,55 +1,28 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import { NextApiRequest, NextApiResponse } from 'next';
 import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
+import { upsertChunks } from '@/lib/vectorStore'; // Now properly exported
 import pdfParse from 'pdf-parse';
-import { upsertChunks } from '@/lib/vectorStore';
 
-interface NextApiRequestWithFile extends NextApiRequest {
-  file?: Express.Multer.File;
+interface MulterNextApiHandler {
+  (req: NextApiRequest, res: NextApiResponse, callback: (err?: unknown) => void): void;
 }
-
-// Configure multer storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
-  }
-});
-
-const upload = multer({ 
-  storage,
+// Multer configuration
+const upload = multer({
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
+    fileSize: 10 * 1024 * 1024 // 10MB
   }
 });
-
-// Middleware handler
-const runMiddleware = (req: NextApiRequest, res: NextApiResponse, middleware: any) => {
-  return new Promise((resolve, reject) => {
-    middleware(req, res, (result: any) => {
-      if (result instanceof Error) {
-        return reject(result);
-      }
-      return resolve(result);
-    });
-  });
-};
 
 export const config = {
   api: {
-    bodyParser: false, // Disable default bodyParser
-  },
+    bodyParser: false
+  }
 };
 
 export default async function handler(
-  req: NextApiRequestWithFile,
+  req: NextApiRequest & { file?: Express.Multer.File },
   res: NextApiResponse
 ) {
   if (req.method !== 'POST') {
@@ -57,59 +30,36 @@ export default async function handler(
   }
 
   try {
-    // Run multer middleware
-    await runMiddleware(req, res, upload.single('file'));
+    // Process upload
+ await new Promise<void>((resolve, reject) => {
+  (upload.single('file') as unknown as MulterNextApiHandler)(req, res, (err) => {
+    if (err) return reject(err);
+    resolve();
+  });
+});
 
     if (!req.file) {
-      return res.status(400).json({ error: 'No file was uploaded' });
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    console.log('Uploaded file:', req.file); // Debug log
+    // Parse PDF
+    const pdfData = await pdfParse(req.file.buffer);
+    const chunks = pdfData.text
+      .split('\n')
+      .filter(chunk => chunk.trim().length > 0);
 
-    const filePath = path.join(process.cwd(), 'uploads', req.file.filename);
-    const fileBuffer = fs.readFileSync(filePath);
-
-    // Process PDF
-    const pdfData = await pdfParse(fileBuffer);
-    const chunks = chunkText(pdfData.text);
-
-    // Store in vector DB
+    // Store in Pinecone
     await upsertChunks(chunks);
-
-    // Clean up
-    try {
-      fs.unlinkSync(filePath);
-    } catch (err) {
-      console.error('Error deleting file:', err);
-    }
 
     return res.status(200).json({ 
       success: true,
-      chunksCount: chunks.length 
+      chunksCount: chunks.length
     });
 
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('Error:', error);
     return res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Upload failed' 
+      error: error instanceof Error ? error.message : 'Processing failed'
     });
   }
-}
-
-// Helper function to chunk text
-function chunkText(text: string, maxLength = 1000): string[] {
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const sentence of text.split('. ')) {
-    if ((current + sentence).length > maxLength) {
-      chunks.push(current.trim());
-      current = '';
-    }
-    current += sentence + '. ';
-  }
-
-  if (current.trim()) chunks.push(current.trim());
-
-  return chunks;
 }
